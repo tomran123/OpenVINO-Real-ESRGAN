@@ -48,7 +48,12 @@ class RealESRGANer():
         self.tile_pad = tile_pad
         self.pre_pad = pre_pad
         self.mod_scale = None
+        self.openvino = openvino
         self.half = half
+        self.ov_device = ov_device
+        # self.ov_core = ov.Core() if self.openvino else None
+        self.ov_model = None
+        self.ov_model_path = None
 
         # initialize model
         if gpu_id:
@@ -83,10 +88,18 @@ class RealESRGANer():
         self.openvino = openvino
         self.ov_device = ov_device
         if self.openvino:
+            available_devices = set(core.available_devices)
+            requested_device = self.ov_device.upper()
+            if requested_device not in available_devices:
+                print(f'[OV init] Requested device {requested_device} is unavailable: {sorted(available_devices)}')
+                print('[OV init] Falling back to CPU')
+                self.ov_device = 'CPU'
+            else:
+                self.ov_device = requested_device
             self.ov_init()
 
     def ov_init(self):
-        self.ov_model_path = "./RealESRGAN_x4plus_fp16.xml"
+        self.ov_model_path = os.path.join(ROOT_DIR, 'weights', 'RealESRGAN_x4plus_fp16.xml')
         if os.path.exists(self.ov_model_path):
             self.ov_model = core.compile_model(self.ov_model_path, self.ov_device)
             print("[OV init] Done")
@@ -95,8 +108,9 @@ class RealESRGANer():
 
     def ov_model_convert(self):
         torch_model = self.model
-        ov_input = {"x":self.img}
-        ov_model = ov.convert_model(torch_model,example_input=ov_input)
+        ov_input = {'x': self.img.float().cpu()}
+        print('[OV convert] Converting Torch model to OpenVINO IR ...')
+        ov_model = ov.convert_model(torch_model, example_input=ov_input)
         ov.save_model(ov_model, self.ov_model_path)
         print("[OV convert] Done")
 
@@ -104,9 +118,10 @@ class RealESRGANer():
         if not self.ov_model:
             self.ov_model_convert()
             self.ov_init()
-        real_esrgan_x4plus_fp16_out = self.ov_model(self.img)
-        self.output = torch.from_numpy(real_esrgan_x4plus_fp16_out[0])
-        print("[OV Inference] Done")
+        ov_input = self.img.float().cpu().numpy()
+        ov_result = self.ov_model([ov_input])[self.ov_model.output(0)]
+        self.output = torch.from_numpy(ov_result)
+        print('[OV Inference] Done')
 
     def dni(self, net_a, net_b, dni_weight, key='params', loc='cpu'):
         """Deep network interpolation.
